@@ -1,0 +1,6 @@
+/data
+/cleaned_data
+/venv
+*.md
+*.txt
+.DS_Store
