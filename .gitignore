@@ -3,4 +3,10 @@
 /venv
 *.md
 *.txt
+*.txt.lock
 .DS_Store
+/gpt2-finetuned-project-ideas
+/mlruns
+/mlartifacts
+
+!requirements.txt
