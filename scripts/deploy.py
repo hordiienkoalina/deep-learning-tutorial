@@ -58,7 +58,7 @@ class ProjectIdeaGenerator(mlflow.pyfunc.PythonModel):
 # 2) MLflow Logging and Testing
 # ----------------------------
 if __name__ == "__main__":
-    # Path to your fine-tuned GPT-2 model directory
+    # Path to the fine-tuned GPT-2 model directory
     model_dir = "./gpt2-finetuned-project-ideas"
 
     # Ipecify a custom MLflow Tracking URI
