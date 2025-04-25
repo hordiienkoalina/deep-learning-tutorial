@@ -30,6 +30,9 @@ from dotenv import load_dotenv
 import torch
 from transformers import GPT2LMHeadModel, GPT2Tokenizer
 import re
+import mlflow
+from collections import Counter
+from itertools import combinations
 
 
 def load_text(path: Path) -> str:
@@ -64,25 +67,34 @@ def get_non_overlapping_snippets(text: str, length: int = 500, n_examples: int =
     return snippets
 
 
-def parse_output(output: str) -> dict:
-    """
-    Attempt to extract 'keywords', 'user_problem', and 'description' fields from the model output using regex.
-    Prints the raw model output for debugging.
-    Returns a dict with the extracted fields (may be empty if not found).
-    """
-    result = {'keywords': '', 'user_problem': '', 'description': ''}
-    print("DEBUG: Model output:", repr(output))
-    # Regex is case-insensitive and robust to whitespace
-    keywords = re.search(r"(?i)keywords\s*:\s*(.*?)(problem\s*:|description\s*:|$)", output, re.DOTALL)
-    problem = re.search(r"(?i)problem\s*:\s*(.*?)(description\s*:|$)", output, re.DOTALL)
-    description = re.search(r"(?i)description\s*:\s*(.*)", output, re.DOTALL)
-    if keywords:
-        result['keywords'] = keywords.group(1).strip()
-    if problem:
-        result['user_problem'] = problem.group(1).strip()
-    if description:
-        result['description'] = description.group(1).strip()
-    return result
+def compute_metrics(outputs):
+    n = len(outputs)
+    # Diversity: average pairwise Jaccard similarity (using whitespace tokenization)
+    def jaccard(a, b):
+        set_a = set(a.lower().split())
+        set_b = set(b.lower().split())
+        if not set_a or not set_b:
+            return 0.0
+        return len(set_a & set_b) / len(set_a | set_b)
+    pairs = list(combinations(outputs, 2))
+    if pairs:
+        diversity = 1 - sum(jaccard(a, b) for a, b in pairs) / len(pairs)
+    else:
+        diversity = 0.0
+    # Completeness: fraction of non-empty outputs
+    completeness = sum(bool(o.strip()) for o in outputs) / n if n else 0.0
+    # Average length (in characters)
+    avg_length = sum(len(o) for o in outputs) / n if n else 0.0
+    # Redundancy: fraction of duplicate outputs
+    counts = Counter(outputs)
+    n_duplicates = sum(c-1 for c in counts.values() if c > 1)
+    redundancy = n_duplicates / n if n else 0.0
+    return {
+        'diversity': diversity,
+        'completeness': completeness,
+        'avg_output_length': avg_length,
+        'redundancy': redundancy
+    }
 
 
 def generate_idea_with_retry(prompt, model, tokenizer, max_retries=3, min_fields=2):
@@ -115,12 +127,9 @@ def generate_idea_with_retry(prompt, model, tokenizer, max_retries=3, min_fields
                 return ' '.join(sentences[:-1]) if not sentences[-1].endswith(('.', '!', '?')) else text
             return text
         generated_part = trim_to_last_sentence(generated_part)
-        parsed = parse_output(generated_part)
-        # If enough fields are found, return the parsed result
-        if sum(bool(parsed[k]) for k in parsed) >= min_fields:
-            return parsed
-    # If still incomplete after retries, fill missing fields with 'N/A'
-    return {k: v if v else 'N/A' for k, v in parsed.items()}
+        if generated_part.strip():
+            return generated_part
+    return "N/A"
 
 
 def main():
@@ -159,49 +168,64 @@ def main():
             extra_needed = args.n_ideas - len(snippets)
             snippets += [sample_snippet(text, args.snippet_len) for _ in range(extra_needed)]
 
-    for i, snippet in enumerate(snippets, 1):
-        # Construct a minimal, zero-shot prompt to encourage the model to use the snippet
-        prompt = (
-            f"Snippet: {snippet}\n"
-            "Based on the above snippet, generate a project idea in the following format:\n"
-            "Keywords:"
-        )
-        # Ensure prompt + generated tokens <= 1024 (GPT-2 context window)
-        gen_tokens = 100
-        max_length = 1024
-        max_prompt_tokens = max_length - gen_tokens
-        prompt_tokens = tokenizer(prompt, return_tensors='pt', padding=True, truncation=False)['input_ids'][0]
-        if len(prompt_tokens) > max_prompt_tokens:
-            # Truncate the prompt from the start if needed
-            prompt_tokens = prompt_tokens[-max_prompt_tokens:]
-            prompt = tokenizer.decode(prompt_tokens)
-        # Generate the idea from the model
-        inputs = tokenizer(prompt, return_tensors='pt', padding=True)
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=120,  # Allow up to 120 new tokens for the idea
-            pad_token_id=tokenizer.eos_token_id,
-            do_sample=True,
-            top_p=0.8,
-            top_k=40,
-            temperature=0.5,  # Lower temperature for more coherent endings
-            repetition_penalty=1.2,
-            num_return_sequences=1,
-            early_stopping=True
-        )
-        generated = tokenizer.decode(outputs[0], skip_special_tokens=True)
-        generated_part = generated[len(prompt):].strip()
-        # Trim to last full sentence for cleaner output
-        def trim_to_last_sentence(text):
-            sentences = re.split(r'(?<=[.!?]) +', text)
-            if len(sentences) > 1:
-                return ' '.join(sentences[:-1]) if not sentences[-1].endswith(('.', '!', '?')) else text
-            return text
-        generated_part = trim_to_last_sentence(generated_part)
-        # Print the snippet and the generated idea
-        print(f"\n=== Idea {i}/{args.n_ideas} ===")
-        print(f"Snippet: {snippet} \n")
-        print(f"Idea: {generated_part}")
+    mlflow.set_experiment("gen_ideas_sampling_metrics")
+    with mlflow.start_run():
+        mlflow.log_param("sampling_strategy", args.sampling_strategy)
+        mlflow.log_param("n_ideas", args.n_ideas)
+        mlflow.log_param("snippet_len", args.snippet_len)
+        outputs = []
+        for i, snippet in enumerate(snippets, 1):
+            # Construct a minimal, zero-shot prompt to encourage the model to use the snippet
+            prompt = (
+                f"Snippet: {snippet}\n"
+                "Based on the above snippet, generate a project idea in the following format:\n"
+                "Keywords:"
+            )
+            # Ensure prompt + generated tokens <= 1024 (GPT-2 context window)
+            gen_tokens = 100
+            max_length = 1024
+            max_prompt_tokens = max_length - gen_tokens
+            prompt_tokens = tokenizer(prompt, return_tensors='pt', padding=True, truncation=False)['input_ids'][0]
+            if len(prompt_tokens) > max_prompt_tokens:
+                # Truncate the prompt from the start if needed
+                prompt_tokens = prompt_tokens[-max_prompt_tokens:]
+                prompt = tokenizer.decode(prompt_tokens)
+            # Generate the idea from the model
+            inputs = tokenizer(prompt, return_tensors='pt', padding=True)
+            outputs_model = model.generate(
+                **inputs,
+                max_new_tokens=120,  # Allow up to 120 new tokens for the idea
+                pad_token_id=tokenizer.eos_token_id,
+                do_sample=True,
+                top_p=0.8,
+                top_k=40,
+                temperature=0.5,  # Lower temperature for more coherent endings
+                repetition_penalty=1.2,
+                num_return_sequences=1,
+                early_stopping=True
+            )
+            generated = tokenizer.decode(outputs_model[0], skip_special_tokens=True)
+            generated_part = generated[len(prompt):].strip()
+            # Trim to last full sentence for cleaner output
+            def trim_to_last_sentence(text):
+                sentences = re.split(r'(?<=[.!?]) +', text)
+                if len(sentences) > 1:
+                    return ' '.join(sentences[:-1]) if not sentences[-1].endswith(('.', '!', '?')) else text
+                return text
+            generated_part = trim_to_last_sentence(generated_part)
+            # Print the snippet and the generated idea
+            print(f"\n=== Idea {i}/{args.n_ideas} ===")
+            print(f"Snippet: {snippet} \n")
+            print(f"Idea: {generated_part}")
+            outputs.append(generated_part)
+        # Compute and log metrics
+        metrics = compute_metrics(outputs)
+        for k, v in metrics.items():
+            mlflow.log_metric(k, v)
+        print("\nQuantitative metrics:")
+        for k, v in metrics.items():
+            print(f"{k}: {v:.4f}")
+
 
 if __name__ == '__main__':
     main()
