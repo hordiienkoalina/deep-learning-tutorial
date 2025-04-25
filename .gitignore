@@ -2,6 +2,8 @@
 /cleaned_data
 /venv
 /gpt2-finetuned
+/gpt2-finetuned-nonoverlap
+/gpt2-finetuned-random
 /mlruns
 /mlartifacts
 

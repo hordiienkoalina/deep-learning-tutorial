@@ -48,6 +48,22 @@ def sample_snippet(text: str, length: int = 500) -> str:
     return text[start:start + length]
 
 
+def get_non_overlapping_snippets(text: str, length: int = 500, n_examples: int = 5):
+    """
+    Generate non-overlapping snippets of the given length from the input text.
+    Returns up to n_examples snippets.
+    """
+    snippets = []
+    for start in range(0, len(text), length):
+        if len(snippets) >= n_examples:
+            break
+        end = start + length
+        snippet = text[start:end]
+        if snippet:
+            snippets.append(snippet)
+    return snippets
+
+
 def parse_output(output: str) -> dict:
     """
     Attempt to extract 'keywords', 'user_problem', and 'description' fields from the model output using regex.
@@ -121,6 +137,8 @@ def main():
                         help='Number of ideas to generate')
     parser.add_argument('--snippet_len', type=int, default=500,
                         help='Length of each random snippet')
+    parser.add_argument('--sampling_strategy', type=str, default='random', choices=['random', 'non_overlapping'],
+                        help='Sampling strategy for snippet selection: random (default, overlapping) or non_overlapping (consecutive, non-overlapping segments)')
     args = parser.parse_args()
 
     # Load the aggregated notes text
@@ -131,9 +149,17 @@ def main():
     model = GPT2LMHeadModel.from_pretrained(str(args.model_dir))
     model.eval()
 
-    for i in range(1, args.n_ideas + 1):
-        # Sample a random snippet from the aggregated notes
-        snippet = sample_snippet(text, args.snippet_len)
+    # Select snippets according to the chosen strategy
+    if args.sampling_strategy == 'random':
+        snippets = [sample_snippet(text, args.snippet_len) for _ in range(args.n_ideas)]
+    else:
+        snippets = get_non_overlapping_snippets(text, args.snippet_len, args.n_ideas)
+        # If not enough non-overlapping snippets, pad with random
+        if len(snippets) < args.n_ideas:
+            extra_needed = args.n_ideas - len(snippets)
+            snippets += [sample_snippet(text, args.snippet_len) for _ in range(extra_needed)]
+
+    for i, snippet in enumerate(snippets, 1):
         # Construct a minimal, zero-shot prompt to encourage the model to use the snippet
         prompt = (
             f"Snippet: {snippet}\n"

@@ -9,10 +9,14 @@ Features:
 - Saves the fine-tuned model and tokenizer.
 
 Usage:
-    python scripts/fine_tune.py --train
+    python scripts/fine_tune.py --train --jsonl <path_to_jsonl> --txt <path_to_txt> --model_out <output_dir> --sampling_strategy <strategy>
 
 Arguments:
-    --train: Fine-tune GPT-2 on examples.jsonl
+    --train: Fine-tune GPT-2 on the specified dataset
+    --jsonl: Path to input examples JSONL file
+    --txt: Path to output train.txt file
+    --model_out: Output directory for the fine-tuned model
+    --sampling_strategy: Sampling strategy used (random or non_overlapping)
 
 Notes:
     run `pip install --upgrade transformers accelerate` if you encounter issues with the accelerate library
@@ -23,47 +27,45 @@ from pathlib import Path
 from datasets import load_dataset
 from transformers import GPT2Tokenizer, GPT2LMHeadModel, Trainer, TrainingArguments, TextDataset, DataCollatorForLanguageModeling
 import torch
+import mlflow
 
-EXAMPLES_PATH = "examples.jsonl"
-TRAIN_TXT_PATH = "train.txt"
-MODEL_OUT = "gpt2-finetuned"
-
-def prepare_train_txt():
+def prepare_train_txt(jsonl_path, txt_path):
     """
-    Converts examples.jsonl to train.txt, one example per line (concatenated fields).
+    Converts a JSONL file to a TXT file, one example per line (concatenated fields).
     """
-    dataset = load_dataset('json', data_files=EXAMPLES_PATH, split='train')
+    dataset = load_dataset('json', data_files=str(jsonl_path), split='train')
     def concat_fields(example):
         return {'text': ' '.join(str(v) for v in example.values() if isinstance(v, str))}
     dataset = dataset.map(concat_fields)
     dataset = dataset.remove_columns([col for col in dataset.column_names if col != 'text'])
-    with open(TRAIN_TXT_PATH, 'w') as f:
+    with open(txt_path, 'w') as f:
         for ex in dataset['text']:
             f.write(ex + '\n')
-    print(f"Prepared {TRAIN_TXT_PATH} from {EXAMPLES_PATH}")
+    print(f"Prepared {txt_path} from {jsonl_path}")
+    return dataset
 
-def fine_tune():
+def fine_tune(jsonl_path, txt_path, model_out, sampling_strategy):
     """
-    Fine-tune GPT-2 (or GPT-2 Medium) on structured examples from train.txt.
-    Saves the fine-tuned model and tokenizer to MODEL_OUT.
+    Fine-tune GPT-2 (or GPT-2 Medium) on structured examples from txt_path.
+    Logs parameters and metrics to MLflow.
     """
-    prepare_train_txt()
-    # Load tokenizer and model (GPT-2 Medium for more capacity)
+    dataset = prepare_train_txt(jsonl_path, txt_path)
+    num_samples = len(dataset)
+    avg_len = sum(len(t) for t in dataset['text']) / num_samples if num_samples > 0 else 0
+
     tokenizer = GPT2Tokenizer.from_pretrained('gpt2-medium')
     tokenizer.pad_token = tokenizer.eos_token
     model = GPT2LMHeadModel.from_pretrained('gpt2-medium')
-    # Prepare dataset and data collator
     train_dataset = TextDataset(
         tokenizer=tokenizer,
-        file_path=TRAIN_TXT_PATH,
+        file_path=txt_path,
         block_size=128
     )
     data_collator = DataCollatorForLanguageModeling(
         tokenizer=tokenizer, mlm=False
     )
-    # Set up training arguments
     training_args = TrainingArguments(
-        output_dir=MODEL_OUT,
+        output_dir=model_out,
         overwrite_output_dir=True,
         num_train_epochs=3,
         per_device_train_batch_size=2,
@@ -73,28 +75,41 @@ def fine_tune():
         prediction_loss_only=True,
         fp16=torch.cuda.is_available(),
     )
-    # Train the model
-    trainer = Trainer(
-        model=model,
-        args=training_args,
-        data_collator=data_collator,
-        train_dataset=train_dataset,
-    )
-    trainer.train()
-    trainer.save_model(MODEL_OUT)
-    tokenizer.save_pretrained(MODEL_OUT)
-    print(f"Model fine-tuned and saved to {MODEL_OUT}")
+    with mlflow.start_run():
+        mlflow.log_param("sampling_strategy", sampling_strategy)
+        mlflow.log_param("num_samples", num_samples)
+        mlflow.log_param("avg_sample_length", avg_len)
+        mlflow.log_param("model_size", "gpt2-medium")
+        mlflow.log_param("train_txt_path", str(txt_path))
+        mlflow.log_param("jsonl_path", str(jsonl_path))
+        trainer = Trainer(
+            model=model,
+            args=training_args,
+            data_collator=data_collator,
+            train_dataset=train_dataset,
+        )
+        train_result = trainer.train()
+        trainer.save_model(model_out)
+        tokenizer.save_pretrained(model_out)
+        final_loss = train_result.training_loss if hasattr(train_result, 'training_loss') else None
+        mlflow.log_metric("final_training_loss", final_loss)
+        print(f"Model fine-tuned and saved to {model_out}")
+        print(f"MLflow run logged.")
 
 def main():
     """
     Main CLI entry point. Fine-tunes the model based on arguments.
     """
-    parser = argparse.ArgumentParser(description="Fine-tune GPT-2 on examples.jsonl.")
-    parser.add_argument('--train', action='store_true', help='Fine-tune GPT-2 on examples.jsonl')
+    parser = argparse.ArgumentParser(description="Fine-tune GPT-2 on a specified dataset.")
+    parser.add_argument('--train', action='store_true', help='Fine-tune GPT-2 on the specified dataset')
+    parser.add_argument('--jsonl', type=str, required=True, help='Path to input examples JSONL file')
+    parser.add_argument('--txt', type=str, required=True, help='Path to output train.txt file')
+    parser.add_argument('--model_out', type=str, required=True, help='Output directory for the fine-tuned model')
+    parser.add_argument('--sampling_strategy', type=str, required=True, help='Sampling strategy used (random or non_overlapping)')
     args = parser.parse_args()
 
     if args.train:
-        fine_tune()
+        fine_tune(args.jsonl, args.txt, args.model_out, args.sampling_strategy)
     else:
         parser.print_help()
 

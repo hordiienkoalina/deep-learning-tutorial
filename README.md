@@ -30,30 +30,34 @@ python3 scripts/clean_notes.py
 ```
 
 ### 2. Example Generation
-Generate structured project idea examples from your aggregated notes:
+Generate structured project idea examples from your aggregated notes using either random or non-overlapping sampling:
 ```
-python3 scripts/gen_examples.py --agg_file cleaned_data/all_notes_aggregated.txt --n_examples 500 --output examples.jsonl --engine gpt-4o-mini
+python3 scripts/gen_examples.py --agg_file cleaned_data/all_notes_aggregated.txt --n_examples 100 --output examples_random.jsonl --engine gpt-4o-mini --sampling_strategy random
+python3 scripts/gen_examples.py --agg_file cleaned_data/all_notes_aggregated.txt --n_examples 100 --output examples_nonoverlap.jsonl --engine gpt-4o-mini --sampling_strategy non_overlapping
 ```
 - `--agg_file`: Path to the aggregated notes text file.
 - `--n_examples`: Number of examples to generate.
 - `--output`: Output JSONL file.
 - `--engine`: OpenAI model to use for generation.
+- `--sampling_strategy`: Choose `random` (default) for random overlapping snippets, or `non_overlapping` for consecutive, non-overlapping segments.
 
 ### 3. Fine-Tune GPT-2 Medium
-Convert the generated examples to a plain-text file and fine-tune GPT-2 Medium:
+Convert the generated examples to a plain-text file and fine-tune GPT-2 Medium. Run for each dataset:
 ```
-python3 scripts/fine_tune.py --train
+python3 scripts/fine_tune.py --train --jsonl examples_random.jsonl --txt train_random.txt --model_out gpt2-finetuned-random --sampling_strategy random
+python3 scripts/fine_tune.py --train --jsonl examples_nonoverlap.jsonl --txt train_nonoverlap.txt --model_out gpt2-finetuned-nonoverlap --sampling_strategy non_overlapping
 ```
-- This script will automatically convert `examples.jsonl` to `train.txt` and use it for fine-tuning.
 
 ### 4. Inference (Generate Ideas)
-Generate project ideas interactively from your fine-tuned model:
+Generate project ideas interactively from your fine-tuned model, specifying the sampling strategy for snippet selection:
 ```
-python3 scripts/gen_ideas.py --agg_file cleaned_data/all_notes_aggregated.txt --model_dir gpt2-finetuned --n_ideas 5
+python3 scripts/gen_ideas.py --agg_file cleaned_data/all_notes_aggregated.txt --model_dir gpt2-finetuned-random --n_ideas 5 --sampling_strategy random
+python3 scripts/gen_ideas.py --agg_file cleaned_data/all_notes_aggregated.txt --model_dir gpt2-finetuned-nonoverlap --n_ideas 5 --sampling_strategy non_overlapping
 ```
 - `--agg_file`: Path to the aggregated notes text file.
 - `--model_dir`: Path to the fine-tuned GPT-2 model directory.
 - `--n_ideas`: Number of ideas to generate.
+- `--sampling_strategy`: Sampling strategy for snippet selection.
 
 ### 5. MLflow Deployment
 Get a free port for MLflow:

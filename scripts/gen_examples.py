@@ -87,6 +87,21 @@ def get_random_snippet(text: str, length: int = 500) -> str:
     start = random.randint(0, len(text) - length)
     return text[start:start + length]
 
+def get_non_overlapping_snippets(text: str, length: int = 500, n_examples: int = 100):
+    """
+    Generate non-overlapping snippets of the given length from the input text.
+    Returns up to n_examples snippets.
+    """
+    snippets = []
+    for start in range(0, len(text), length):
+        if len(snippets) >= n_examples:
+            break
+        end = start + length
+        snippet = text[start:end]
+        if snippet:
+            snippets.append(snippet)
+    return snippets
+
 def generate_example(snippet: str, engine: str = 'gpt-3.5-turbo') -> dict:
     """
     Calls the OpenAI chat endpoint with response_format to force a JSON output
@@ -136,15 +151,32 @@ def main():
         '--engine', type=str, default='gpt-4o-mini',
         help='OpenAI model to use for generation'
     )
+    parser.add_argument(
+        '--sampling_strategy', type=str, default='random', choices=['random', 'non_overlapping'],
+        help='Sampling strategy: random (default, overlapping) or non_overlapping (consecutive, non-overlapping segments)'
+    )
+    parser.add_argument(
+        '--snippet_len', type=int, default=500,
+        help='Length of each snippet (default: 500)'
+    )
     args = parser.parse_args()
 
     # Load the aggregated notes text
     text = load_aggregated_text(args.agg_file)
 
+    # Select snippets according to the chosen strategy
+    if args.sampling_strategy == 'random':
+        snippets = [get_random_snippet(text, args.snippet_len) for _ in range(args.n_examples)]
+    else:
+        snippets = get_non_overlapping_snippets(text, args.snippet_len, args.n_examples)
+        # If not enough non-overlapping snippets, pad with random
+        if len(snippets) < args.n_examples:
+            extra_needed = args.n_examples - len(snippets)
+            snippets += [get_random_snippet(text, args.snippet_len) for _ in range(extra_needed)]
+
     # Open the output file and generate examples
     with args.output.open('w', encoding='utf-8') as out_f:
-        for i in range(args.n_examples):
-            snippet = get_random_snippet(text)
+        for i, snippet in enumerate(snippets):
             try:
                 example = generate_example(snippet, engine=args.engine)
                 # Merge snippet with the structured response
