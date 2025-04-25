@@ -1,12 +1,17 @@
 /data
 /cleaned_data
 /venv
+/gpt2-finetuned
+/mlruns
+/mlartifacts
+
 *.md
 *.txt
 *.txt.lock
+*.json
+*.jsonl
+
 .DS_Store
-/gpt2-finetuned-project-ideas
-/mlruns
-/mlartifacts
+.env
 
 !requirements.txt
