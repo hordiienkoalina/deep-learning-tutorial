@@ -48,6 +48,15 @@ python3 scripts/fine_tune.py --train --jsonl examples_random.jsonl --txt train_r
 python3 scripts/fine_tune.py --train --jsonl examples_nonoverlap.jsonl --txt train_nonoverlap.txt --model_out gpt2-finetuned-nonoverlap --sampling_strategy non_overlapping
 ```
 
+#### Hyperparameter Search (Grid Search)
+You can run a basic hyperparameter search (grid search) over number of epochs, batch size, and learning rate. Each run will be logged to MLflow for comparison:
+```
+python3 scripts/fine_tune.py --search_hyperparams --jsonl examples_random.jsonl --txt train_random.txt --model_out gpt2-finetuned-random --sampling_strategy random
+```
+- This will try several combinations of `num_train_epochs`, `per_device_train_batch_size`, and `learning_rate` (see script for grid values).
+- Each run will be logged as a separate MLflow run, including all hyperparameters and metrics.
+- You can adjust the grid in the script if you want to search over different values.
+
 ### 4. Inference (Generate Ideas)
 Generate project ideas interactively from your fine-tuned model, specifying the sampling strategy for snippet selection:
 ```
